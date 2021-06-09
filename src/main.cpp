@@ -1,61 +1,45 @@
-// #include <Arduino.h>
-// #include <BLEDevice.h>
-// #include <BLEUtils.h>
-// #include <BLEServer.h>
-// #include <BLEBeacon.h>
-
-// #define BEACON_UUID "87b99b2c-90fd-11e9-bc42-526af7764f64" 
-
-// BLEAdvertising *pAdvertising;   // BLE Advertisement type
-
-// void setup() {
-//   Serial.begin(9600);
-//   Serial.println("Setting up beacon!");
-
-//   BLEDevice::init("ESP32 Beacon");
-//   BLEServer *pServer = BLEDevice::createServer();
-  
-//   pAdvertising = BLEDevice::getAdvertising();
-//   BLEDevice::startAdvertising();
-  
-//   BLEBeacon beacon = BLEBeacon();
-//   beacon.setManufacturerId(0x4C00); // fake Apple 0x004C LSB (ENDIAN_CHANGE_U16!)
-//   beacon.setProximityUUID(BLEUUID(BEACON_UUID));
-//   beacon.setMajor((0xFFFF0000) >> 16);
-//   beacon.setMinor(0xFFFF);
-//   BLEAdvertisementData advertisementData = BLEAdvertisementData();
-//   BLEAdvertisementData scanResponseData = BLEAdvertisementData();
-//   advertisementData.setFlags(0x04); // BR_EDR_NOT_SUPPORTED 0x04
-//   advertisementData.addData("patient-AZ5A");
-//   pAdvertising->setAdvertisementData(advertisementData);
-//   //pAdvertising->setScanResponse(true);
-//   pAdvertising->setScanResponseData(scanResponseData);
-
-//   pAdvertising->start();
-  
-//   Serial.println("Advertising started");
-
-// }
-
-// void loop() {
-//   pAdvertising->start();
-//   Serial.println("Advertizing started...");
-//   delay(100);
-//   pAdvertising->stop();
-// }
-
 #include "Arduino.h"
 #include "sys/time.h"
 #include "BLEDevice.h"
 #include "BLEUtils.h"
 #include "BLEServer.h"
 #include "BLEBeacon.h"
+#include "EEPROM.h"
 
-// See the following for generating UUIDs:
-// https://www.uuidgenerator.net/
-BLEAdvertising *pAdvertising;   // BLE Advertisement type
 
-#define BEACON_UUID "87b99b2c-90fd-11e9-bc42-526af7764f64" // UUID 1 128-Bit (may use linux tool uuidgen or random numbers via https://www.uuidgenerator.net/)
+
+#define EEPROM_SIZE 64
+#define BEACON_UUID "87b99b2c-90fd-11e9-bc42-526af7764f64" 
+#define SERVICE_UUID "aab96cca-3d21-4374-ba0d-28c9954f1221"
+#define CHARACTERISTIC_NAME_UUID "eeec3b9b-3f42-46d1-b2bc-bb9ce1eaee35"
+
+void initBLEDevice(std::string name);
+void setBeacon();
+
+BLEAdvertising *pAdvertising;   
+BLECharacteristic *nameCharacteristic;
+int addr = 0;
+
+
+class MyServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) {
+      Serial.println("Device connected");
+    };
+
+    void onDisconnect(BLEServer* pServer) {
+      // saving the value of name characterisitic in eeprom storage and restarting the device.
+      Serial.println("Device disconnected - Saving name and restarting...");
+      // writing byte-by-byte to EEPROM
+      for (int i = 0; i < EEPROM_SIZE; i++) {
+          EEPROM.write(addr, nameCharacteristic->getValue().c_str()[i]);
+          addr += 1;
+      }
+      EEPROM.commit();
+      ESP.restart();
+      
+        
+    }
+};
 
 void setBeacon() {
 
@@ -80,25 +64,59 @@ void setBeacon() {
   pAdvertising->setScanResponseData(oScanResponseData);
 }
 
-void setup() {
-
-  Serial.begin(115200);
- 
-  // Create the BLE Device
-  BLEDevice::init("patient-4");
+void initBLEDevice(std::string name) {
+  BLEDevice::init(name);
+  Serial.println(BLEDevice::toString().c_str());
   BLEDevice::setPower(ESP_PWR_LVL_P9, ESP_BLE_PWR_TYPE_ADV);
-  // Create the BLE Server
-  BLEServer *pServer = BLEDevice::createServer(); // <-- no longer required to instantiate BLEServer, less flash and ram usage
+  BLEServer *pServer = BLEDevice::createServer(); 
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+  nameCharacteristic = pService->createCharacteristic(CHARACTERISTIC_NAME_UUID,BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE); 
+  nameCharacteristic->setValue(name);      
+  pService->start();
+
   pAdvertising = BLEDevice::getAdvertising();
   BLEDevice::startAdvertising();
   setBeacon();
-   // Start advertising
+
   pAdvertising->start();
+}
+
+void setup() {
+
+  Serial.begin(115200);
+  if (!EEPROM.begin(EEPROM_SIZE)) {
+    Serial.println("failed to init EEPROM");
+    delay(1000000);
+  }
+
+
+  // read the name of this beacon from EEPROM storage and init the BLE Device
+  char id[64];
+  id[0] = 0;
+  // reading byte-by-byte from EEPROM
+  for (int i = 0; i < EEPROM_SIZE; i++) {
+    byte readValue = EEPROM.read(i);
+    if (readValue == 0) {
+        break;
+    }
+    char readValueChar = char(readValue);
+    Serial.print(readValueChar);
+    id[i] = readValueChar;
+  }
+  if (id[0] == 0) {
+    Serial.println("Not yet configured. Choosing default name.");
+    initBLEDevice("dPS Beacon");
+  } else {
+    initBLEDevice(id);
+  }
+  
  
-  Serial.println("Advertising started...");
+  Serial.println("Setup completed. Advertising started...");
   delay(100);
 }
 
 void loop() {
- 
+
 }
